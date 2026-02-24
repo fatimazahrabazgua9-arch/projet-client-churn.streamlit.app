@@ -15,102 +15,128 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Churn Bank Dashboard", layout="wide")
-st.title("🏦 Dashboard de Rétention Client")
+st.set_page_config(page_title="Expert Churn Dash", layout="wide")
 
-# --- CHARGEMENT DES DONNÉES ---
+# --- MOTEUR DE TRAITEMENT (FEATURE ENGINEERING INCLUS) ---
 @st.cache_data
-def load_and_preprocess():
-    df = pd.read_csv('bank_customer_churn_10k.csv').drop(['RowNumber', 'CustomerId', 'Surname'], axis=1)
-    df['Gender'] = LabelEncoder().fit_transform(df['Gender'])
-    df = pd.get_dummies(df, drop_first=True)
-    return df
+def load_data(secteur_choisi):
+    if secteur_choisi == "Banque":
+        df = pd.read_csv('bank_customer_churn_10k.csv').drop(['RowNumber', 'CustomerId', 'Surname'], axis=1)
+        # Feature Engineering Banque
+        df['ServiceCount'] = df['NumOfProducts']
+        df['Gender'] = LabelEncoder().fit_transform(df['Gender'])
+        df_encoded = pd.get_dummies(df, drop_first=True)
+        target = 'Exited'
+    else:
+        df = pd.read_csv('WA_Fn-UseC_-Telco-Customer-Churn.csv').drop('customerID', axis=1)
+        df['TotalCharges'] = pd.to_numeric(df['TotalCharges'], errors='coerce').fillna(0)
+        
+        # 1. Calcul du Nombre de Services (Telco)
+        serv_cols = ['PhoneService', 'MultipleLines', 'OnlineSecurity', 'OnlineBackup', 
+                     'DeviceProtection', 'TechSupport', 'StreamingTV', 'StreamingMovies']
+        df['ServiceCount'] = (df[serv_cols] == 'Yes').sum(axis=1)
+        
+        # 2. Calcul du Ratio Charges/Ancienneté
+        df['ChargeTenureRatio'] = df['MonthlyCharges'] / (df['tenure'] + 1)
+        
+        df['Churn'] = df['Churn'].map({'Yes': 1, 'No': 0})
+        df_encoded = pd.get_dummies(df, drop_first=True)
+        target = 'Churn'
+    
+    return df_encoded, target
+
+# --- BARRE LATÉRALE ---
+st.sidebar.title("🏢 Business Unit")
+secteur = st.sidebar.selectbox("Secteur :", ["Banque", "Télécommunications"])
 
 try:
-    df = load_and_preprocess()
-    X = df.drop('Exited', axis=1)
-    y = df['Exited']
+    df_encoded, target_col = load_data(secteur)
+    X = df_encoded.drop(target_col, axis=1)
+    y = df_encoded[target_col]
+    
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train)
     X_test_s = scaler.transform(X_test)
 
-    # --- BARRE LATÉRALE : FORMULAIRE ---
-    st.sidebar.header("📋 Profil du Nouveau Client")
-    def get_user_input():
-        data = {
-            'CreditScore': st.sidebar.slider("Score de Crédit", 300, 850, 600),
-            'Gender': 1 if st.sidebar.selectbox("Genre", ["Homme", "Femme"]) == "Homme" else 0,
-            'Age': st.sidebar.slider("Âge", 18, 92, 40),
-            'Tenure': st.sidebar.slider("Ancienneté", 0, 10, 5),
-            'Balance': st.sidebar.number_input("Solde ($)", 0, 250000, 50000),
-            'NumOfProducts': st.sidebar.selectbox("Nombre de produits", [1, 2, 3, 4]),
-            'HasCrCard': 1 if st.sidebar.checkbox("Carte de Crédit", True) else 0,
-            'IsActiveMember': 1 if st.sidebar.checkbox("Membre Actif", True) else 0,
-            'EstimatedSalary': st.sidebar.number_input("Salaire ($)", 0, 200000, 50000),
-            'Geo': st.sidebar.selectbox("Pays", ["France", "Germany", "Spain"])
-        }
-        # Mapping pour l'encodage One-Hot
-        data['Geography_Germany'] = 1 if data['Geo'] == "Germany" else 0
-        data['Geography_Spain'] = 1 if data['Geo'] == "Spain" else 0
-        del data['Geo']
-        return pd.DataFrame(data, index=[0])
+    st.title(f"🚀 Plateforme Prédictive : {secteur}")
 
-    input_df = get_user_input()
-    input_s = scaler.transform(input_df)
+    tab1, tab2 = st.tabs(["🎯 Prédiction Expert", "📊 Dashboard Performance"])
 
-    # --- SELECTION DU MODÈLE ---
-    st.write("### 🤖 Analyse par Intelligence Artificielle")
-    algo_name = st.selectbox("Sélectionnez l'algorithme :", 
-                             ["Random Forest", "XGBoost", "Régression Logistique", "KNN", "SVM"])
-
-    models = {
-        "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
-        "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='logloss'),
-        "Régression Logistique": LogisticRegression(),
-        "KNN": KNeighborsClassifier(n_neighbors=5),
-        "SVM": SVC(probability=True)
-    }
-
-    model = models[algo_name]
-    model.fit(X_train_s, y_train)
-    
-    # --- RÉSULTATS ---
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Prédiction")
-        prob = model.predict_proba(input_s)[0][1]
-        st.metric("Probabilité de Départ", f"{round(prob * 100, 2)}%")
+    with tab1:
+        col_inp, col_out = st.columns([1, 2])
         
-        if prob > 0.5:
-            st.error("⚠️ HAUT RISQUE : Le client risque de quitter la banque.")
-        else:
-            st.success("✅ FIDÈLE : Le client semble vouloir rester.")
+        with col_inp:
+            st.subheader("Paramètres Client")
+            inputs = {col: 0 for col in X.columns}
+            
+            if secteur == "Banque":
+                inputs['Age'] = st.slider("Âge", 18, 92, 40)
+                tenure = st.slider("Ancienneté (Années)", 0, 10, 5)
+                inputs['tenure'] = tenure
+                inputs['NumOfProducts'] = st.selectbox("Produits Bancaires", [1, 2, 3, 4])
+                inputs['ServiceCount'] = inputs['NumOfProducts']
+                inputs['Balance'] = st.number_input("Solde ($)", 0, 250000, 15000)
+                geo = st.selectbox("Pays", ["France", "Germany", "Spain"])
+                if f"Geography_{geo}" in inputs: inputs[f"Geography_{geo}"] = 1
+            else:
+                tenure = st.slider("Ancienneté (Mois)", 0, 72, 12)
+                monthly = st.number_input("Frais Mensuels ($)", 0.0, 150.0, 75.0)
+                services = st.slider("Services souscrits (Internet, TV, etc.)", 0, 8, 3)
+                
+                inputs['tenure'] = tenure
+                inputs['MonthlyCharges'] = monthly
+                inputs['ServiceCount'] = services
+                inputs['ChargeTenureRatio'] = monthly / (tenure + 1)
+                
+            user_df = pd.DataFrame(inputs, index=[0])
+            user_scaled = scaler.transform(user_df[X.columns])
 
-    with col2:
-        st.subheader("Performance Technique")
-        y_pred = model.predict(X_test_s)
-        acc = accuracy_score(y_test, y_pred)
-        st.write(f"Précision du modèle ({algo_name}) : **{round(acc*100, 2)}%**")
-        
-        # Matrice de Confusion
-        cm = confusion_matrix(y_test, y_pred)
-        fig_cm, ax_cm = plt.subplots(figsize=(4, 3))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Greens', ax=ax_cm)
-        ax_cm.set_xlabel('Prédictions')
-        ax_cm.set_ylabel('Réalité')
-        st.pyplot(fig_cm)
+        with col_out:
+            algo = st.selectbox("Intelligence Artificielle", ["XGBoost", "Random Forest", "Logistic Regression"])
+            model = XGBClassifier() if algo == "XGBoost" else (RandomForestClassifier() if algo == "Random Forest" else LogisticRegression())
+            model.fit(X_train_s, y_train)
+            prob = model.predict_proba(user_scaled)[0][1]
 
-    # --- IMPORTANCE (Onglet spécifique) ---
-    if algo_name in ["Random Forest", "XGBoost"]:
-        st.divider()
-        st.subheader("📊 Quels facteurs pèsent le plus ?")
-        importances = pd.Series(model.feature_importances_, index=X.columns).sort_values(ascending=True)
-        fig_imp, ax_imp = plt.subplots()
-        importances.plot(kind='barh', color='orange', ax=ax_imp)
-        st.pyplot(fig_imp)
+            # Affichage des KPI calculés
+            st.subheader("Indicateurs Clés de Risque")
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Probabilité Churn", f"{round(prob*100, 1)}%")
+            
+            if secteur == "Télécommunications":
+                k2.metric("Ratio $/Mois", f"{round(inputs['ChargeTenureRatio'], 2)}")
+                k3.metric("Nb Services", inputs['ServiceCount'])
+            else:
+                k2.metric("Engagement", f"{inputs['ServiceCount']} Prod.")
+                k3.metric("Type Client", "Senior" if inputs['Age'] > 50 else "Standard")
 
-except FileNotFoundError:
-    st.error("Fichier CSV introuvable. Assurez-vous qu'il est dans le même dossier.")
+            if prob > 0.5:
+                st.error("🚨 HAUT RISQUE : Client sur le départ.")
+            else:
+                st.success("✅ FIDÈLE : Engagement client solide.")
+
+            # Rapport et export
+            rapport = f"Analyse {secteur}\nRisque : {round(prob*100,2)}%\nServices : {inputs['ServiceCount']}\nModèle : {algo}"
+            st.download_button("📥 Télécharger Rapport d'Analyse", rapport, file_name="expert_churn.txt")
+
+    with tab2:
+        st.header("Analyse Statistique & Duel d'Algorithmes")
+        if st.button("Lancer la comparaison"):
+            results = []
+            for name, m in {"XGBoost": XGBClassifier(), "Random Forest": RandomForestClassifier(), "LR": LogisticRegression()}.items():
+                m.fit(X_train_s, y_train)
+                acc = accuracy_score(y_test, m.predict(X_test_s))
+                results.append({"Algorithme": name, "Précision": acc})
+            
+            st.table(pd.DataFrame(results))
+            
+            # Graphique d'importance des variables (pour montrer que nos calculs servent !)
+            if hasattr(model, 'feature_importances_'):
+                st.subheader("Variables les plus importantes (Feature Importance)")
+                feat_imp = pd.Series(model.feature_importances_, index=X.columns).sort_values(ascending=False).head(5)
+                fig, ax = plt.subplots()
+                feat_imp.plot(kind='bar', ax=ax, color='skyblue')
+                st.pyplot(fig)
+
+except Exception as e:
+    st.error(f"Erreur système : {e}")
